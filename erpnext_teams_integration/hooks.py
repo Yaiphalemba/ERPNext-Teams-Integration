@@ -46,8 +46,7 @@ app_license = "mit"
 # doctype_js = {"doctype" : "public/js/doctype.js"}
 doctype_js = {
     "Project": "public/js/project_teams_chat.js",
-    "Event": "public/js/event_teams_chat.js",
-    "Teams Settings": "public/js/teams_settings.js"
+    "Event": "public/js/event_teams_chat.js"
 }
 
 # doctype_list_js = {"doctype" : "public/js/doctype_list.js"}
@@ -174,6 +173,12 @@ after_install = "erpnext_teams_integration.install.after_install"
 # 	],
 # }
 
+scheduler_events = {
+       "hourly": [
+           "erpnext_teams_integration.api.chat.sync_all_conversations"
+       ]
+   }
+
 # Testing
 # -------
 
@@ -249,4 +254,3 @@ after_install = "erpnext_teams_integration.install.after_install"
 # default_log_clearing_doctypes = {
 # 	"Logging DocType Name": 30  # days to retain logs
 # }
-
