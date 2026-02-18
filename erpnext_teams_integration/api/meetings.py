@@ -186,25 +186,41 @@ def _resolve_subject(doc, doctype: str, docname: str) -> str:
 # ---------------------------------------------------------------------------
 # ID Extraction Helpers
 # ---------------------------------------------------------------------------
-
-def _extract_event_id_from_join_url(join_url: str, token: str) -> str | None:
-    """Finds a Calendar Event ID based on the Teams Join URL."""
-    try:
-        if not join_url: return None
-        headers = _headers_with_auth(token, json_content=False)
-        # Filter events by the joinUrl of the attached online meeting
-        search_url = f"{GRAPH_API}/me/events?$filter=onlineMeeting/joinUrl eq '{join_url}'"
-        res = requests.get(search_url, headers=headers, timeout=30)
+# @frappe.whitelist()
+# def _extract_event_id_from_join_url(join_url: str, token: str) -> str | None:
+#     """Finds a Calendar Event ID based on the Teams Join URL."""
+#     try:
+#         if not join_url: return None
         
-        # Don't throw here, just return None if not found/error
-        if res.status_code == 200:
-            events = res.json().get("value", [])
-            if events:
-                return events[0].get("id")
-        return None
-    except Exception:
-        return None
+#         headers = _headers_with_auth(token, json_content=False)
+        
+#         # NOTE: /me/events only returns the default page size (usually 10).
+#         # If the event is older/newer, you might miss it.
+#         # Consider using the 'calendarView' (Time Window) strategy for better accuracy.
+#         search_url = f"{GRAPH_API}/me/events?$top=50" # Fetch up to 50 to be safe
+        
+#         res = requests.get(search_url, headers=headers, timeout=30)
+        
+#         if res.status_code == 200:
+#             events = res.json().get("value", [])
+            
+#             #LOOP AND MATCH
+#             for event in events:
+#                 meeting_info = event.get("onlineMeeting") or {}
+#                 # Check if the Join URL matches exactly
+#                 if meeting_info.get("joinUrl") == join_url:
+#                     frappe.msgprint(f"Found Event: {event.get('subject')}")
+#                     return event.get("id")
+            
+#             frappe.msgprint("URL not found in the recent events list.")
+#             return None
+            
+#         return None
+#     except Exception as e:
+#         frappe.log_error(f"Error: {e}")
+#         return None
 
+@frappe.whitelist()
 def _extract_meeting_id_from_join_url(join_url: str, token: str) -> str | None:
     """Finds an OnlineMeeting ID based on the Join URL (Legacy)."""
     try:
@@ -239,10 +255,13 @@ def create_meeting(docname, doctype):
         azure_ids = _collect_participants_azure_ids(doc)
         
         existing_meeting_url = doc.get("custom_teams_meeting_url")
-        
         if existing_meeting_url:
-            return _update_existing_meeting(doc, azure_ids, existing_meeting_url, token)
-
+            existing_event_id = doc.get("custom_outlook_event_id")
+            if existing_event_id:
+                # If we have an event ID stored, we can directly update it without searching
+                return _update_event_attendees(existing_event_id, azure_ids, token)
+            else:
+                return _update_existing_meeting(doc, azure_ids, existing_meeting_url, token)
         return _create_new_meeting(doc, doctype, docname, azure_ids, token)
 
     except frappe.ValidationError:
@@ -308,12 +327,6 @@ def _create_new_meeting(doc, doctype, docname, azure_ids, token):
 def _update_existing_meeting(doc, azure_ids, meeting_url, token):
     """Update attendees. Tries Event first, then OnlineMeeting."""
     try:
-        # 1. Try updating as an Event (Outlook)
-        event_id = _extract_event_id_from_join_url(meeting_url, token)
-        if event_id:
-            return _update_event_attendees(event_id, azure_ids, token)
-            
-        # 2. Fallback: Try updating as OnlineMeeting (Legacy)
         meeting_id = _extract_meeting_id_from_join_url(meeting_url, token)
         if meeting_id:
             return _update_onlinemeeting_attendees(meeting_id, azure_ids, token)
@@ -395,7 +408,7 @@ def get_meeting_details(docname, doctype):
         if not token: return {"exists": True, "url": url, "message": "Auth required."}
 
         # Try Event
-        event_id = _extract_event_id_from_join_url(url, token)
+        event_id = doc.get("custom_outlook_event_id")
         if event_id:
             res = requests.get(f"{GRAPH_API}/me/events/{event_id}", headers=_headers_with_auth(token))
             if res.status_code == 200:
@@ -450,7 +463,7 @@ def delete_meeting(docname, doctype):
         if not token: return {"error": "auth_required"}
 
         # Try Event
-        event_id = _extract_event_id_from_join_url(url, token)
+        event_id = doc.get("custom_outlook_event_id")
         if event_id:
             requests.delete(f"{GRAPH_API}/me/events/{event_id}", headers=_headers_with_auth(token))
             doc.db_set("custom_teams_meeting_url", "")
@@ -503,7 +516,7 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
         end_iso = to_utc_isoformat(end_dt)
 
         # Try Event (Outlook)
-        event_id = _extract_event_id_from_join_url(url, token)
+        event_id = doc.get("custom_outlook_event_id")
         if event_id:
             payload = {
                 "start": {"dateTime": start_iso, "timeZone": "UTC"},
@@ -552,7 +565,7 @@ def get_meeting_attendees(docname, doctype):
         attendees = []
         
         # Try Event
-        event_id = _extract_event_id_from_join_url(url, token)
+        event_id = doc.get("custom_outlook_event_id")
         if event_id:
             res = requests.get(f"{GRAPH_API}/me/events/{event_id}", headers=_headers_with_auth(token))
             if res.status_code == 200:
