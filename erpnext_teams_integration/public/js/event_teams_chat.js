@@ -114,6 +114,24 @@ frappe.ui.form.on("Event", {
                 });
             }, __("Teams"));
 
+            frm.add_custom_button(__('Reschedule Teams Meeting'), () => {
+                frappe.call({
+                    method: "erpnext_teams_integration.api.meetings.reschedule_meeting",
+                    args: { docname: frm.doc.name, doctype: frm.doc.doctype },
+                    callback: function(r) {
+                        if (r.message) {
+                            // If it's an object, show the .message field
+                            let msg = (typeof r.message === "string") ? r.message : r.message.message;
+                            frappe.msgprint(msg);
+                        } else if (r.message && r.message.login_url) {
+                            // Redirect to MS login if required
+                            window.location.href = r.message.login_url;
+                        }
+                        frm.reload_doc();
+                    }
+                });
+            }, __("Teams"));
+
             // New "Sync Now" button inside Teams dropdown
             frm.add_custom_button(__('Sync Now'), () => {
                 let args = {};
