@@ -11,6 +11,7 @@
   "azure_owner_email_id",
   "owner_azure_object_id",
   "redirect_uri",
+  "custom_webhook_subscription_id",
   "access_token",
   "refresh_token",
   "token_expiry",
@@ -69,13 +70,19 @@
    "fieldtype": "Data",
    "label": "Owner Azure Object ID",
    "read_only": 1
+  },
+  {
+   "fieldname": "custom_webhook_subscription_id",
+   "fieldtype": "Data",
+   "label": "Webhook Subscription ID",
+   "read_only": 1
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2026-02-24 14:25:51.052493",
+ "modified": "2026-02-24 15:19:56.035713",
  "modified_by": "Administrator",
  "module": "Erpnext Teams Integration",
  "name": "Teams Settings",
