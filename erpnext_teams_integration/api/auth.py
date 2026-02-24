@@ -4,6 +4,7 @@ from werkzeug.wrappers import Response
 from datetime import datetime, timedelta
 from frappe.utils import now_datetime, cstr
 from .helpers import get_settings, get_access_token
+from werkzeug.exceptions import HTTPException
 import json
 import hashlib
 
@@ -161,43 +162,61 @@ def revoke_authentication():
         frappe.throw("Failed to revoke authentication")
 
 #Webhook and Subscription Management
-@frappe.whitelist(allow_guest=True)
-def handle_graph_webhook():
-    """
-    The main listener for Microsoft Graph API Subscriptions.
-    Must be a public endpoint (allow_guest=True).
-    """
-    # 1. The Validation Handshake (Microsoft checking if we are alive)
-    validation_token = frappe.request.args.get('validationToken')
-    if validation_token:
-        # We MUST return plain text, not JSON, or Microsoft rejects the subscription
-        frappe.response['type'] = 'text/plain'
-        # In some Frappe versions, you have to bypass the formatter entirely:
-        frappe.request.environ['werkzeug.request'] = None 
-        return Response(validation_token, status=200, mimetype='text/plain')
-
-    # 2. Handling the Actual RSVP Notifications
-    payload = frappe.request.get_json()
-    
-    if payload and "value" in payload:
-        for notification in payload.get("value", []):
-            resource_url = notification.get("resource")
-            
-            # Microsoft requires us to respond within 3 seconds, or they assume we failed
-            # and will retry aggressively. So, we DO NOT process the RSVP here. 
-            # We shove it into a background queue and reply "202 Accepted" immediately.
-            frappe.enqueue(
-                "erpnext_teams_integration.api.webhooks.process_rsvp_change",
-                resource_url=resource_url,
-                queue="short"
-            )
-
-    # Tell Microsoft we got the message
-    frappe.response['type'] = 'text/plain'
-    return Response("Accepted", status=202, mimetype='text/plain')
-
 GRAPH_API = "https://graph.microsoft.com/v1.0"
 
+class GraphValidationResponse(HTTPException):
+    def __init__(self, token):
+        super().__init__()
+        self.response = Response(token, status=200, mimetype='text/plain')
+
+class GraphAcceptedResponse(HTTPException):
+    def __init__(self):
+        super().__init__()
+        self.response = Response("Accepted", status=202, mimetype='text/plain')
+
+# ---------------------------------------------------------------------------
+# 🎧 THE WEBHOOK LISTENER
+# ---------------------------------------------------------------------------
+@frappe.whitelist(allow_guest=True)
+def handle_graph_webhook(**kwargs):
+    """
+    The main listener for Microsoft Graph API Subscriptions.
+    Must be a public endpoint (allow_guest=True) and accept **kwargs.
+    """
+    _ = frappe.request.get_data()
+
+    # Grab token safely from the URL query parameters
+    token = frappe.request.args.get('validationToken') or frappe.form_dict.get('validationToken')
+    
+    if token:
+        raise GraphValidationResponse(token)
+
+    # --- Handling the Actual RSVPs Below ---
+    try:
+        # Prevent Frappe from blocking Microsoft's POST payload due to missing session cookies
+        frappe.local.flags.ignore_csrf = True
+        
+        payload = frappe.request.get_json()
+        
+        if payload and "value" in payload:
+            for notification in payload.get("value", []):
+                resource_url = notification.get("resource")
+                if resource_url:
+                    frappe.enqueue(
+                        "erpnext_teams_integration.api.auth.process_rsvp_change",
+                        resource_url=resource_url,
+                        queue="short"
+                    )
+    except Exception as e:
+        frappe.log_error(message=str(e), title="Webhook Payload Error")
+
+    # Acknowledge the RSVP to Microsoft using the exact same hijack trick
+    raise GraphAcceptedResponse()
+
+
+# ---------------------------------------------------------------------------
+# SUBSCRIPTION & SYNC LOGIC
+# ---------------------------------------------------------------------------
 @frappe.whitelist()
 def subscribe_to_calendar_events():
     """Tells Microsoft Graph to send webhooks when meetings are updated (RSVPs)."""
@@ -205,20 +224,20 @@ def subscribe_to_calendar_events():
     if not token:
         frappe.throw("Authentication required.")
 
-    # Your public Frappe URL + the API path to your webhook function
-    # e.g., "https://my-frappe-site.com/api/method/erpnext_teams_integration.api.webhooks.handle_graph_webhook"
-    notification_url = frappe.utils.get_url("/api/method/erpnext_teams_integration.api.webhooks.handle_graph_webhook")
+    # REMINDER: Hardcoded for Ngrok testing. 
+    # Move this to frappe.db.get_single_value('Teams Settings', 'webhook_base_url') for production.
+    # ngrok_base = "https://ae39-115-241-89-123.ngrok-free.app"
+    notification_url = frappe.utils.get_url("/api/method/erpnext_teams_integration.api.auth.handle_graph_webhook")
 
-    # Calendar subscriptions expire in maximum 4230 minutes (under 3 days).
-    # We set it to expire in 2 days to be safe.
+    # Calendar subscriptions expire in maximum 4230 minutes. We use 2 days.
     expiration_time = datetime.utcnow() + timedelta(days=2)
 
     payload = {
         "changeType": "updated",
         "notificationUrl": notification_url,
-        "resource": "/me/events", # Listen to all events on this user's calendar
+        "resource": "/me/events", 
         "expirationDateTime": expiration_time.strftime("%Y-%m-%dT%H:%M:%SZ"),
-        "clientState": "FrappeTeamsSyncV1" # Optional secret to verify it's really MS sending the webhook
+        "clientState": "FrappeTeamsSyncV1"
     }
 
     headers = {
@@ -230,13 +249,13 @@ def subscribe_to_calendar_events():
 
     if res.status_code == 201:
         data = res.json()
-        # You should ideally save this Subscription ID in your Frappe Settings/DB
-        # so you can renew it or delete it later!
         return {"success": True, "subscription_id": data.get("id")}
     else:
-        frappe.log_error(f"Subscription failed: {res.text}", "Graph Webhook Error")
+        # Safely named kwargs to avoid the 140-char title limit crash
+        frappe.log_error(message=res.text, title="Graph Webhook Error")
         frappe.throw(f"Failed to subscribe: {res.status_code}")
         
+
 def process_rsvp_change(resource_url):
     """
     Background job triggered by Graph API Webhook.
@@ -247,8 +266,6 @@ def process_rsvp_change(resource_url):
         if not token: 
             return
             
-        # Microsoft sends the resource like "Users('id')/Events('event_id')"
-        # We need to build the full API URL
         if not resource_url.startswith("https"):
             url = f"{GRAPH_API}/{resource_url.lstrip('/')}"
         else:
@@ -259,11 +276,10 @@ def process_rsvp_change(resource_url):
             "Content-Type": "application/json"
         }
             
-        # 1. Ask Microsoft for the updated Event details
         res = requests.get(url, headers=headers, timeout=30)
         
         if res.status_code != 200:
-            frappe.log_error(f"Failed to fetch event RSVP: {res.text}", "RSVP Sync Error")
+            frappe.log_error(message=res.text, title="RSVP Sync Error")
             return
             
         event_data = res.json()
@@ -273,18 +289,14 @@ def process_rsvp_change(resource_url):
         if not outlook_event_id or not attendees:
             return
             
-        # 2. Find the corresponding ERPNext Event Document
         event_name = frappe.db.get_value("Event", {"custom_outlook_event_id": outlook_event_id}, "name")
         if not event_name:
-            # We don't track this event, or it was deleted in ERPNext
             return 
             
-        # 3. Create a clean lookup dictionary from the Graph API response
-        # Graph Statuses: 'none', 'tentative', 'accepted', 'declined', 'notResponded'
         status_map = {
             "accepted": "Yes",
             "declined": "No",
-            "tentative": "Maybe" # If you don't have 'Maybe' in your Select field, map this to blank or remove it
+            "tentative": "Maybe" 
         }
         
         attendee_responses = {}
@@ -295,39 +307,34 @@ def process_rsvp_change(resource_url):
             if email and status in status_map:
                 attendee_responses[email] = status_map[status]
                 
-        # 4. Map the responses to the ERPNext Child Table
         doc = frappe.get_doc("Event", event_name)
         doc_updated = False
         
         for row in doc.event_participants:
             row_email = (row.email or "").lower()
-            
             if row_email in attendee_responses:
                 new_status = attendee_responses[row_email]
-                
-                # Only update if the status actually changed to avoid unnecessary saves
                 if row.attending != new_status:
                     row.attending = new_status
                     doc_updated = True
                     
-        # 5. Save the document silently
         if doc_updated:
-            # Prevent circular loops if you have "on_update" hooks that send updates back to Teams
             doc.flags.ignore_validate = True 
             doc.flags.ignore_permissions = True
             doc.save()
             frappe.db.commit()
             
     except Exception as e:
-        frappe.log_error(f"Error processing RSVP: {str(e)}", "RSVP Processing Error")
+        frappe.log_error(message=str(e), title="RSVP Processing Error")
         
-        
+
 def renew_graph_subscriptions():
     """
     Cron job to keep the Microsoft Graph Webhook alive.
     Runs daily.
     """
     try:
+        frappe.msgprint("Renewing Microsoft Graph Subscriptions...")
         token = get_access_token()
         if not token: 
             return
@@ -340,9 +347,7 @@ def renew_graph_subscriptions():
             "Content-Type": "application/json"
         }
         
-        # If we have an existing subscription, try to renew it
         if sub_id:
-            # Extend for another 48 hours
             expiration_time = datetime.utcnow() + timedelta(days=2)
             payload = {
                 "expirationDateTime": expiration_time.strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -351,27 +356,18 @@ def renew_graph_subscriptions():
             res = requests.patch(f"{GRAPH_API}/subscriptions/{sub_id}", headers=headers, json=payload)
             
             if res.status_code == 200:
-                # Successfully renewed, we're done here!
                 return
             else:
-                # 404 means it already expired and Microsoft deleted it. We must recreate.
-                frappe.log_error(f"Failed to renew webhook (likely expired). Recreating... {res.text}", "Webhook Renewal")
+                frappe.log_error(message=res.text, title="Webhook Renewal Warning")
         
-        # If we reach here, we either didn't have a sub_id, or the renewal failed.
-        # Time to create a brand new one. (Assuming you created the subscribe function from the previous step)
+        # Recreate if it failed or didn't exist
         result = subscribe_to_calendar_events()
         
         if result and result.get("success"):
-            # Save the new ID so we can renew it tomorrow
             settings.db_set("custom_webhook_subscription_id", result.get("subscription_id"))
             frappe.db.commit()
             
     except Exception as e:
-        # 1. Grab the full error string for the body
         error_details = str(e)
-        
-        # 2. Slice the title to strictly 135 characters just to be safe
         safe_title = f"Webhook Renewal Error: {error_details}"[:135]
-        
-        # 3. Log it cleanly
         frappe.log_error(message=frappe.get_traceback(), title=safe_title)
