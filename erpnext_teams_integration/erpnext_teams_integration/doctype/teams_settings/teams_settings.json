@@ -50,7 +50,8 @@
   {
    "fieldname": "token_expiry",
    "fieldtype": "Datetime",
-   "label": "Token Expiry"
+   "label": "Token Expiry",
+   "read_only": 1
   },
   {
    "fieldname": "enabled_doctypes",
@@ -74,7 +75,7 @@
  "index_web_pages_for_search": 1,
  "issingle": 1,
  "links": [],
- "modified": "2025-08-15 14:20:57.051991",
+ "modified": "2026-02-24 14:25:51.052493",
  "modified_by": "Administrator",
  "module": "Erpnext Teams Integration",
  "name": "Teams Settings",
