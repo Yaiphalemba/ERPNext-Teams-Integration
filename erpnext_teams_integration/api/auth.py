@@ -367,4 +367,11 @@ def renew_graph_subscriptions():
             frappe.db.commit()
             
     except Exception as e:
-        frappe.log_error(f"Error renewing webhook: {str(e)}", "Webhook Renewal Error")
+        # 1. Grab the full error string for the body
+        error_details = str(e)
+        
+        # 2. Slice the title to strictly 135 characters just to be safe
+        safe_title = f"Webhook Renewal Error: {error_details}"[:135]
+        
+        # 3. Log it cleanly
+        frappe.log_error(message=frappe.get_traceback(), title=safe_title)
