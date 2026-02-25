@@ -77,7 +77,7 @@ Seamlessly connect ERPNext with Microsoft Teams to enhance collaboration, stream
 
 ```bash
 cd $PATH_TO_YOUR_BENCH
-bench get-app https://github.com/your-repo/erpnext_teams_integration --branch master
+bench get-app [https://github.com/your-repo/erpnext_teams_integration](https://github.com/your-repo/erpnext_teams_integration) --branch master
 bench --site your-site-name install-app erpnext_teams_integration
 bench --site your-site-name migrate
 bench restart
