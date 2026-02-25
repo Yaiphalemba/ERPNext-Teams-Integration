@@ -180,7 +180,7 @@ scheduler_events = {
        "daily": [
             "erpnext_teams_integration.api.auth.renew_graph_subscriptions"
     ]
-   }
+}
 
 # Testing
 # -------
