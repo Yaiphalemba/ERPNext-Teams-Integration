@@ -26,6 +26,7 @@ frappe.ui.form.on("Project", {
             frm.remove_custom_button(__('Post to Channel'), __("Teams"));
             frm.remove_custom_button(__('Create Teams Meeting'), __("Teams"));
             frm.remove_custom_button(__('Sync Now'), __("Teams"));
+            frm.remove_custom_button(__('Cancel Teams Meeting'), __("Teams"));
             return;
         }
 
@@ -197,6 +198,25 @@ frappe.ui.form.on("Project", {
                     args: frm.doc.custom_teams_chat_id ? { chat_id: frm.doc.custom_teams_chat_id } : {},
                     callback: (r) => {
                         if (!r.exc) frappe.show_alert({message: __('Chats synced successfully.'), indicator: 'green'});
+                    }
+                });
+            }, __("Teams"));
+
+            // Cancel Teams Meeting
+            frm.add_custom_button(__('Cancel Teams Meeting'), () => {
+                frappe.call({
+                    method: "erpnext_teams_integration.api.meetings.delete_meeting",
+                    args: { docname: frm.doc.name, doctype: frm.doc.doctype },
+                    callback: function(r) {
+                        if (r.message) {
+                            // If it's an object, show the .message field
+                            let msg = (typeof r.message === "string") ? r.message : r.message.message;
+                            frappe.msgprint(msg);
+                        } else if (r.message && r.message.login_url) {
+                            // Redirect to MS login if required
+                            window.location.href = r.message.login_url;
+                        }
+                        frm.reload_doc();
                     }
                 });
             }, __("Teams"));
