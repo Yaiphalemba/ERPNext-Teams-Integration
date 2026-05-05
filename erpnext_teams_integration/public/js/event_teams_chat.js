@@ -27,6 +27,7 @@ frappe.ui.form.on("Event", {
             frm.remove_custom_button(__('Create Teams Meeting'), __("Teams"));
             frm.remove_custom_button(__('Reschedule Teams Meeting'), __("Teams"));
             frm.remove_custom_button(__('Sync Now'), __("Teams"));
+            frm.remove_custom_button(__('Cancel Teams Meeting'), __("Teams"));
             return;
         }
 
@@ -176,6 +177,24 @@ frappe.ui.form.on("Event", {
                         if (!r.exc) {
                             frappe.msgprint(__('Chats synced successfully.'));
                         }
+                    }
+                });
+            }, __("Teams"));
+
+            frm.add_custom_button(__('Cancel Teams Meeting'), () => {
+                frappe.call({
+                    method: "erpnext_teams_integration.api.meetings.delete_meeting",
+                    args: { docname: frm.doc.name, doctype: frm.doc.doctype },
+                    callback: function(r) {
+                        if (r.message) {
+                            // If it's an object, show the .message field
+                            let msg = (typeof r.message === "string") ? r.message : r.message.message;
+                            frappe.msgprint(msg);
+                        } else if (r.message && r.message.login_url) {
+                            // Redirect to MS login if required
+                            window.location.href = r.message.login_url;
+                        }
+                        frm.reload_doc();
                     }
                 });
             }, __("Teams"));

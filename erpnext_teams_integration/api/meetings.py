@@ -29,6 +29,14 @@ SUPPORTED_DOCTYPES = {
         "start_field": "expected_start_date",
         "end_field": "expected_end_date",
     },
+    "Interview": {
+        "participants_field": ["interview_details", "custom_applicant_email"],  
+        "email_field": "interviewer",   
+        "subject_field": "name",
+        "start_date": "scheduled_on",    
+        "start_field": "from_time",     
+        "end_field": "to_time",     
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -92,7 +100,6 @@ def _headers_with_auth(token: str, json_content=True):
     return h
 
 def _check_api_response(res, docname=None):
-    """Helper to catch common Graph errors like 401/403"""
     if res.status_code == 401:
         return {"error": "auth_required", "login_url": get_login_url(docname) if docname else None}
     
@@ -107,42 +114,51 @@ def _check_api_response(res, docname=None):
     return None
 
 # ---------------------------------------------------------------------------
-# Attendee & Email Helpers (Updated for External Users)
+# Attendee & Email Helpers 
 # ---------------------------------------------------------------------------
 
 def _collect_participant_emails(doc):
-    """Collects emails (internal and external) instead of Azure IDs."""
+    """Collects emails from child tables, lists, or direct string fields."""
     doctype = doc.doctype
     if doctype not in SUPPORTED_DOCTYPES:
         frappe.throw(f"Doctype {doctype} is not supported for Teams meetings.")
 
     cfg = SUPPORTED_DOCTYPES[doctype]
-    participants_field = cfg["participants_field"]
+    participants_fields = cfg["participants_field"]
     email_field = cfg["email_field"]
 
-    emails = set()
-    rows = getattr(doc, participants_field, []) or []
+    # Coerce to list so we can handle legacy single-string configs natively
+    if isinstance(participants_fields, str):
+        participants_fields = [participants_fields]
 
-    for row in rows:
-        email = None
-        
-        # 1. Try to get email from linked User (Internal)
-        user_link = getattr(row, "user", None)
-        if user_link:
-            email = frappe.db.get_value("User", user_link, "email")
-            
-        # 2. Fallback to direct email field (External/Guests/Contacts)
-        if not email:
-            email = getattr(row, email_field, None)
-            
-        if email:
-            # Force lowercase for consistency
-            emails.add(email.lower())
+    emails = set()
+
+    for field in participants_fields:
+        field_value = getattr(doc, field, None)
+
+        # Handle Table / List of docs
+        if isinstance(field_value, list):
+            for row in field_value:
+                email = None
+                # 1. Internal User link check
+                user_link = getattr(row, "user", None)
+                if user_link:
+                    email = frappe.db.get_value("User", user_link, "email")
+                    
+                # 2. Fallback to direct mapped column (e.g. interviewer)
+                if not email:
+                    email = getattr(row, email_field, None)
+                    
+                if email:
+                    emails.add(email.lower())
+                    
+        # Handle raw strings (e.g. custom_applicant_email)
+        elif isinstance(field_value, str) and "@" in field_value:
+            emails.add(field_value.lower())
             
     return list(emails)
 
 def _build_event_attendees(emails):
-    """Build attendees list for Calendar Events using raw Emails."""
     attendees = []
     for email in emails:
         if email:
@@ -153,14 +169,11 @@ def _build_event_attendees(emails):
     return attendees
 
 def _build_attendees_from_participants_list(emails):
-    """Legacy helper for pure OnlineMeetings (Requires Azure IDs)."""
     attendees = []
     for email in emails:
-        # Since legacy onlineMeetings strictly needs Azure IDs, we look it up from the email
         azure_id = frappe.db.get_value("User", {"email": email}, "azure_object_id")
         if not azure_id:
             try:
-                # Fallback to Graph API lookup if needed
                 azure_id = get_azure_user_id_by_email(email)
             except Exception:
                 pass
@@ -173,9 +186,20 @@ def _build_default_times_for_doctype(doc, doctype: str):
     cfg = SUPPORTED_DOCTYPES.get(doctype) or {}
     start_field = cfg.get("start_field")
     end_field = cfg.get("end_field")
+    start_date_field = cfg.get("start_date")
 
-    start_val = getattr(doc, start_field, None) if start_field else None
-    end_val = getattr(doc, end_field, None) if end_field else None
+    # Handle split Date and Time components
+    if start_date_field:
+        base_date = getattr(doc, start_date_field, None)
+        start_time = getattr(doc, start_field, None) or "09:00:00"
+        end_time = getattr(doc, end_field, None) or "09:30:00"
+        
+        start_val = f"{base_date} {start_time}" if base_date else None
+        end_val = f"{base_date} {end_time}" if base_date else None
+    else:
+        # Legacy full-datetime fields
+        start_val = getattr(doc, start_field, None) if start_field else None
+        end_val = getattr(doc, end_field, None) if end_field else None
 
     if doctype == "Project":
         start_dt = ensure_datetime_with_time(start_val, 9, 0)
@@ -198,7 +222,6 @@ def _resolve_subject(doc, doctype: str, docname: str) -> str:
 
 @frappe.whitelist()
 def _extract_meeting_id_from_join_url(join_url: str, token: str) -> str | None:
-    """Finds an OnlineMeeting ID based on the Join URL (Legacy)."""
     try:
         if not join_url: return None
         headers = _headers_with_auth(token, json_content=False)
@@ -228,8 +251,6 @@ def create_meeting(docname, doctype):
             return {"error": "auth_required", "login_url": get_login_url(docname)}
 
         doc = frappe.get_doc(doctype, docname)
-        
-        # Grab emails instead of Azure IDs
         participant_emails = _collect_participant_emails(doc)
         
         existing_meeting_url = doc.get("custom_teams_meeting_url")
@@ -249,7 +270,6 @@ def create_meeting(docname, doctype):
         frappe.throw("Failed to create Teams meeting.")
 
 def _create_new_meeting(doc, doctype, docname, participant_emails, token):
-    """Create a new Outlook Calendar Event with Teams meeting attached."""
     try:
         subject = _resolve_subject(doc, doctype, docname)
         start_dt, end_dt = _build_default_times_for_doctype(doc, doctype)
@@ -301,7 +321,6 @@ def _create_new_meeting(doc, doctype, docname, participant_emails, token):
         frappe.throw(str(e))
 
 def _update_existing_meeting(doc, participant_emails, meeting_url, token):
-    """Update attendees. Tries Event first, then OnlineMeeting."""
     try:
         meeting_id = _extract_meeting_id_from_join_url(meeting_url, token)
         if meeting_id:
@@ -314,7 +333,6 @@ def _update_existing_meeting(doc, participant_emails, meeting_url, token):
         frappe.throw("Failed to update meeting.")
 
 def _update_event_attendees(event_id, participant_emails, token):
-    """Fetch existing event, merge attendees, and patch."""
     headers = _headers_with_auth(token)
     get_res = requests.get(f"{GRAPH_API}/me/events/{event_id}", headers=headers)
     
@@ -328,10 +346,8 @@ def _update_event_attendees(event_id, participant_emails, token):
     existing_emails = {a.get('emailAddress', {}).get('address', '').lower() for a in current_data.get('attendees', [])}
     
     new_attendees = []
-    # Keep existing
     new_attendees.extend(current_data.get('attendees', []))
     
-    # Add new
     for email in participant_emails:
         if email and email.lower() not in existing_emails:
             new_attendees.append({
@@ -356,7 +372,6 @@ def _update_event_attendees(event_id, participant_emails, token):
     frappe.throw("Failed to update Outlook Event.")
 
 def _update_onlinemeeting_attendees(meeting_id, participant_emails, token):
-    """Legacy update for pure online meetings. Maps emails back to Azure IDs."""
     headers = _headers_with_auth(token)
     attendees = _build_attendees_from_participants_list(participant_emails)
     patch_res = requests.patch(
@@ -382,7 +397,6 @@ def get_meeting_details(docname, doctype):
         token = get_access_token()
         if not token: return {"exists": True, "url": url, "message": "Auth required."}
 
-        # Try Event
         event_id = doc.get("custom_outlook_event_id")
         if event_id:
             res = requests.get(f"{GRAPH_API}/me/events/{event_id}", headers=_headers_with_auth(token))
@@ -400,7 +414,6 @@ def get_meeting_details(docname, doctype):
                     }
                 }
 
-        # Try OnlineMeeting
         meeting_id = _extract_meeting_id_from_join_url(url, token)
         if meeting_id:
              res = requests.get(f"{GRAPH_API}/me/onlineMeetings/{meeting_id}", headers=_headers_with_auth(token))
@@ -437,21 +450,18 @@ def delete_meeting(docname, doctype):
         token = get_access_token()
         if not token: return {"error": "auth_required"}
 
-        # Try Event
         event_id = doc.get("custom_outlook_event_id")
         if event_id:
             requests.delete(f"{GRAPH_API}/me/events/{event_id}", headers=_headers_with_auth(token))
             doc.db_set("custom_teams_meeting_url", "")
             return {"success": True, "message": "Outlook Event deleted."}
 
-        # Try OnlineMeeting
         meeting_id = _extract_meeting_id_from_join_url(url, token)
         if meeting_id:
             requests.delete(f"{GRAPH_API}/me/onlineMeetings/{meeting_id}", headers=_headers_with_auth(token))
             doc.db_set("custom_teams_meeting_url", "")
             return {"success": True, "message": "Teams Meeting deleted."}
 
-        # Just clear local URL if not found
         doc.db_set("custom_teams_meeting_url", "")
         return {"success": True, "message": "URL cleared (not found on remote)."}
 
@@ -473,7 +483,6 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
         token = get_access_token()
         if not token: return {"error": "auth_required", "login_url": get_login_url(docname)}
 
-        # Times
         if not new_start_time or not new_end_time:
             start_dt, end_dt = _build_default_times_for_doctype(doc, doctype)
         else:
@@ -490,7 +499,6 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
         start_iso = to_utc_isoformat(start_dt)
         end_iso = to_utc_isoformat(end_dt)
 
-        # Try Event (Outlook)
         event_id = doc.get("custom_outlook_event_id")
         if event_id:
             payload = {
@@ -507,7 +515,6 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
             else:
                 frappe.throw(f"Outlook update failed: {res.status_code}")
 
-        # Try OnlineMeeting (Legacy)
         meeting_id = _extract_meeting_id_from_join_url(url, token)
         if meeting_id:
             payload = {"startDateTime": start_iso, "endDateTime": end_iso}
@@ -539,7 +546,6 @@ def get_meeting_attendees(docname, doctype):
 
         attendees = []
         
-        # Try Event
         event_id = doc.get("custom_outlook_event_id")
         if event_id:
             res = requests.get(f"{GRAPH_API}/me/events/{event_id}", headers=_headers_with_auth(token))
@@ -552,7 +558,6 @@ def get_meeting_attendees(docname, doctype):
                     })
                 return {"attendees": attendees, "count": len(attendees), "type": "Outlook Event"}
 
-        # Try OnlineMeeting
         meeting_id = _extract_meeting_id_from_join_url(url, token)
         if meeting_id:
             res = requests.get(f"{GRAPH_API}/me/onlineMeetings/{meeting_id}", headers=_headers_with_auth(token))
