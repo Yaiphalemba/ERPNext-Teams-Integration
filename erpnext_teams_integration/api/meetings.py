@@ -5,6 +5,7 @@ from datetime import datetime, time, timedelta
 import frappe
 import pytz
 import requests
+import urllib.parse
 from frappe.utils import get_datetime, now_datetime
 from .helpers import get_access_token, get_azure_user_id_by_email, get_login_url
 
@@ -529,6 +530,136 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
     except Exception as e:
         safe_log_error(f"Reschedule error: {e}", "Reschedule Error")
         frappe.throw("Failed to reschedule.")
+
+# ---------------------------------------------------------------------------
+# API: Recording & Transcript
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def fetch_meeting_recording(docname, doctype):
+    try:
+        token = get_access_token()
+        if not token:
+            return {"error": "auth_required", "login_url": get_login_url(docname)}
+
+        doc = frappe.get_doc(doctype, docname)
+        meeting_url = doc.get("custom_teams_meeting_url")
+
+        if not meeting_url:
+            frappe.throw("No Teams meeting URL found in this document.")
+
+        # 1. Reuse your existing function to get the actual Graph OnlineMeeting ID
+        meeting_id = _extract_meeting_id_from_join_url(meeting_url, token)
+        if not meeting_id:
+            frappe.throw("Could not resolve Teams meeting ID from the stored join URL.")
+
+        # 2. Call the Graph API to get the recordings for this specific meeting
+        headers = _headers_with_auth(token)
+        recordings_res = requests.get(
+            f"{GRAPH_API}/me/onlineMeetings/{meeting_id}/recordings",
+            headers=headers,
+            timeout=30
+        )
+        # return frappe.as_json(recordings_res.json())
+
+        check = _check_api_response(recordings_res)
+        if check: return check
+
+        if recordings_res.status_code != 200:
+            safe_log_error(f"Recording fetch failed {recordings_res.status_code}: {recordings_res.text}", "Teams Recording Error")
+            frappe.throw(f"Teams API error {recordings_res.status_code} while fetching recordings.")
+
+        recordings_data = recordings_res.json().get("value", [])
+        
+        if not recordings_data:
+            return {
+                "success": False, 
+                "message": "No recordings found. The recording may not have been started or is still processing."
+            }
+
+        # 3. Extract the webUrls (SharePoint/OneDrive links to play the video)
+        recording_urls = [rec.get("recordingContentUrl") for rec in recordings_data if rec.get("recordingContentUrl")]
+        
+        doc.set("custom_recording_urls", []) 
+        recording_urls = []
+        
+        for rec in recordings_data:
+            url = rec.get("recordingContentUrl")
+            if not url:
+                continue
+                
+            recording_urls.append(url)
+            
+            # MS returns "2026-09-08T06:44:36.1288882Z"
+            # This splits at the "." to remove microseconds and formats it for ERPNext Datetime fields
+            raw_start = rec.get("createdDateTime", "")
+            if raw_start: raw_start = raw_start.split(".")[0].replace("T", " ")
+            
+            raw_end = rec.get("endDateTime", "")
+            if raw_end: raw_end = raw_end.split(".")[0].replace("T", " ")
+            
+            doc.append("custom_recording_urls", {
+                "recording_url": url,
+                "start_time": raw_start,
+                "end_time": raw_end
+            })
+
+        if not recording_urls:
+            frappe.throw("Recordings exist but no URL was returned by Microsoft.")
+            
+        latest_recording_url = recording_urls[-1]
+
+        # Persist child table changes to the database
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        return {
+            "success": True,
+            "message": "Meeting recording fetched successfully.",
+            "recording_url": latest_recording_url,
+            "all_recordings": recording_urls  # In case there are multiple start/stops during the meeting
+        }
+
+    except frappe.ValidationError:
+        raise
+    except Exception as e:
+        safe_log_error(f"Recording fetch error: {e}", "Meeting Recording Fetch Error")
+        frappe.throw(f"Failed to fetch meeting recording: {str(e)}")
+
+
+@frappe.whitelist(allow_guest=False)
+def stream_meeting_recording(docname, doctype, target_url=None, index=0):
+    index = int(index) # Ensure index is an integer
+    doc = frappe.get_doc(doctype, docname)
+    urls_string = doc.get("custom_meeting_recording_urls")
+    
+    if not urls_string:
+        frappe.throw("No recording URLs found.")
+        
+    # urls = urls_string.split(",")
+    # if index >= len(urls):
+    #     frappe.throw(f"Recording part {index + 1} does not exist.")
+        
+    # target_url = urls[index].strip()
+    
+    token = get_access_token()
+    if not token:
+        frappe.throw("Failed to authenticate with Microsoft.")
+        
+    headers = _headers_with_auth(token)
+    res = requests.get(target_url, headers=headers, stream=True)
+    
+    if res.status_code != 200:
+        safe_log_error(f"Failed to fetch part {index}: {res.text}", "Recording Stream Error")
+        frappe.throw(f"Failed to download recording part {index + 1} from Microsoft.")
+        
+    # Stream the file with the part number in the filename
+    # frappe.response.filename = f"{docname}_Recording_Part_{index + 1}.mp4"
+    # frappe.response.filecontent = res.content
+    # frappe.response.type = "download"
+    frappe.response['type'] = 'download'
+    frappe.response['display_content_as'] = 'inline' 
+    frappe.response['filename'] = f"Meeting_Recording_{'Part_'+ str(index) if index > 1 else 'Full'}.mp4"
+    frappe.response['filecontent'] = res.content
 
 # ---------------------------------------------------------------------------
 # API: Attendees

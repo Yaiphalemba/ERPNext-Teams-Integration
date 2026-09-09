@@ -7,6 +7,8 @@
  "engine": "InnoDB",
  "field_order": [
   "recording_url",
+  "start_time",
+  "end_time",
   "playdownload"
  ],
  "fields": [
@@ -24,13 +26,27 @@
    "in_list_view": 1,
    "in_preview": 1,
    "label": "Play/Download"
+  },
+  {
+   "fieldname": "start_time",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "Start Time"
+  },
+  {
+   "fieldname": "end_time",
+   "fieldtype": "Datetime",
+   "in_list_view": 1,
+   "in_preview": 1,
+   "label": "End Time"
   }
  ],
  "grid_page_length": 50,
  "index_web_pages_for_search": 1,
  "istable": 1,
  "links": [],
- "modified": "2026-09-09 11:32:29.605662",
+ "modified": "2026-09-09 12:42:53.221861",
  "modified_by": "Administrator",
  "module": "Erpnext Teams Integration",
  "name": "Meeting Recordings",
