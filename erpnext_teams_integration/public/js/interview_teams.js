@@ -125,29 +125,6 @@ frappe.ui.form.on("Interview", {
                     }
                 });
             }, __("Teams"));
-            
-
-            // if (frm.doc.custom_meeting_recording_urls) {
-            //     frm.add_custom_button(__('Download Recording(s)'), function() {
-                    
-            //         let api_method = "erpnext_teams_integration.api.meetings.stream_meeting_recording";
-            //         let parts = frm.doc.custom_meeting_recording_urls.split(",");
-                    
-            //         if (parts.length > 1) {
-            //             frappe.msgprint(`Starting download for ${parts.length} files. Please ensure pop-ups are allowed for this site.`);
-            //         }
-                    
-            //         // Loop through the URLs and download them one by one
-            //         parts.forEach((url, index) => {
-            //             setTimeout(() => {
-            //                 let download_url = `/api/method/${api_method}?docname=${encodeURIComponent(frm.doc.name)}&doctype=${encodeURIComponent(frm.doc.doctype)}&index=${index}`;
-            //                 window.open(download_url, '_blank');
-            //             }, index * 1500); // 1.5 second delay between each file
-            //         });
-                    
-            //     }, __('Teams'));
-            // }
-
         }
     }
 });

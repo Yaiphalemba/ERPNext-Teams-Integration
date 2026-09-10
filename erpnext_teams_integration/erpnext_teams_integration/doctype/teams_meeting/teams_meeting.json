@@ -7,22 +7,21 @@
  "engine": "InnoDB",
  "field_order": [
   "meeting_title",
-  "outlook_event_id",
-  "request_response",
-  "allow_forwarding",
-  "hide_attendee_list",
+  "location",
+  "custom_outlook_event_id",
   "column_break_trft",
   "start_date",
   "start_time",
   "end_time",
-  "teams_meeting_url",
+  "custom_teams_meeting_url",
+  "custom_join_teams_meeting",
   "status",
   "section_break_rjte",
   "description",
   "participates_section",
   "meeting_participants",
   "meeting_recordings_section",
-  "table_pixb"
+  "custom_recording_urls"
  ],
  "fields": [
   {
@@ -30,25 +29,8 @@
    "fieldtype": "Small Text",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Meeting Title"
-  },
-  {
-   "default": "0",
-   "fieldname": "request_response",
-   "fieldtype": "Check",
-   "label": "Request Response"
-  },
-  {
-   "default": "0",
-   "fieldname": "allow_forwarding",
-   "fieldtype": "Check",
-   "label": "Allow Forwarding"
-  },
-  {
-   "default": "0",
-   "fieldname": "hide_attendee_list",
-   "fieldtype": "Check",
-   "label": "Hide Attendee List"
+   "label": "Meeting Title",
+   "reqd": 1
   },
   {
    "fieldname": "column_break_trft",
@@ -59,19 +41,22 @@
    "fieldtype": "Date",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Start Date"
+   "label": "Start Date",
+   "reqd": 1
   },
   {
    "fieldname": "start_time",
    "fieldtype": "Time",
    "in_list_view": 1,
    "in_standard_filter": 1,
-   "label": "Start Time"
+   "label": "Start Time",
+   "reqd": 1
   },
   {
    "fieldname": "end_time",
    "fieldtype": "Time",
-   "label": "End Time"
+   "label": "End Time",
+   "reqd": 1
   },
   {
    "fieldname": "participates_section",
@@ -100,22 +85,36 @@
    "options": "\nOpen\nRescheduled\nCompleted\nCancelled"
   },
   {
-   "fieldname": "outlook_event_id",
-   "fieldtype": "Small Text",
-   "label": "Outlook Event ID"
-  },
-  {
-   "fieldname": "teams_meeting_url",
-   "fieldtype": "Small Text",
-   "label": "Teams Meeting URL"
-  },
-  {
    "fieldname": "meeting_recordings_section",
    "fieldtype": "Section Break",
    "label": "Meeting Recordings"
   },
   {
-   "fieldname": "table_pixb",
+   "fieldname": "location",
+   "fieldtype": "Data",
+   "label": "Location"
+  },
+  {
+   "fieldname": "custom_outlook_event_id",
+   "fieldtype": "Small Text",
+   "label": "Outlook Event ID",
+   "read_only": 1
+  },
+  {
+   "fieldname": "custom_teams_meeting_url",
+   "fieldtype": "Small Text",
+   "label": "Teams Meeting URL",
+   "read_only": 1
+  },
+  {
+   "bold": 1,
+   "depends_on": "custom_teams_meeting_url",
+   "fieldname": "custom_join_teams_meeting",
+   "fieldtype": "Button",
+   "label": "Join Teams Meeting"
+  },
+  {
+   "fieldname": "custom_recording_urls",
    "fieldtype": "Table",
    "label": "Recording URLs",
    "options": "Meeting Recordings"
@@ -125,7 +124,7 @@
  "index_web_pages_for_search": 1,
  "is_calendar_and_gantt": 1,
  "links": [],
- "modified": "2026-09-09 11:32:03.484823",
+ "modified": "2026-09-10 16:15:56.620553",
  "modified_by": "Administrator",
  "module": "Erpnext Teams Integration",
  "name": "Teams Meeting",

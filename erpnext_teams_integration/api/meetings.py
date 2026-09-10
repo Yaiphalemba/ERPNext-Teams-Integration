@@ -37,6 +37,14 @@ SUPPORTED_DOCTYPES = {
         "start_date": "scheduled_on",    
         "start_field": "from_time",     
         "end_field": "to_time",     
+    },
+    "Teams Meeting": {
+        "participants_field": "meeting_participants", 
+        "email_field": "email",
+        "subject_field": "meeting_title", 
+        "start_date": "start_date",
+        "start_field": "start_time",
+        "end_field": "end_time",
     }
 }
 
@@ -357,7 +365,7 @@ def _update_event_attendees(event_id, participant_emails, token):
             })
             
     if len(new_attendees) == len(current_data.get('attendees', [])):
-         return {"success": True, "message": "No new participants to add."}
+        return {"success": True, "message": "No new participants to add."}
 
     patch_res = requests.patch(
         f"{GRAPH_API}/me/events/{event_id}",
@@ -417,8 +425,8 @@ def get_meeting_details(docname, doctype):
 
         meeting_id = _extract_meeting_id_from_join_url(url, token)
         if meeting_id:
-             res = requests.get(f"{GRAPH_API}/me/onlineMeetings/{meeting_id}", headers=_headers_with_auth(token))
-             if res.status_code == 200:
+            res = requests.get(f"{GRAPH_API}/me/onlineMeetings/{meeting_id}", headers=_headers_with_auth(token))
+            if res.status_code == 200:
                 d = res.json()
                 return {
                     "exists": True,
@@ -495,8 +503,8 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
                 end_dt = ensure_datetime_with_time(new_end_time)
         
         if start_dt >= end_dt:
-             end_dt = start_dt + timedelta(hours=1)
-             
+            end_dt = start_dt + timedelta(hours=1)
+
         start_iso = to_utc_isoformat(start_dt)
         end_iso = to_utc_isoformat(end_dt)
 
@@ -630,10 +638,6 @@ def fetch_meeting_recording(docname, doctype):
 def stream_meeting_recording(docname, doctype, target_url=None, index=0):
     index = int(index) # Ensure index is an integer
     doc = frappe.get_doc(doctype, docname)
-    urls_string = doc.get("custom_meeting_recording_urls")
-    
-    if not urls_string:
-        frappe.throw("No recording URLs found.")
         
     # urls = urls_string.split(",")
     # if index >= len(urls):
