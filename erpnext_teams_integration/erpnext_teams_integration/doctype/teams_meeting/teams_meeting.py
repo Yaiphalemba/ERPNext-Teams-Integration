@@ -75,3 +75,57 @@ class TeamsMeeting(Document):
             
             # Apply whatever we found (even if it's still None, at least we tried!)
             participant.email = email
+            
+@frappe.whitelist()
+def sync_all_teams_rsvps():
+    """
+    Scheduled job to auto-sync RSVPs.
+    Hook this up in your hooks.py under scheduler_events -> hourly
+    """
+    # Fetch meetings that are not completed/cancelled AND haven't passed today
+    active_meetings = frappe.get_all(
+        "Teams Meeting",
+        filters={
+            "status": ["not in", ["Completed", "Cancelled"]],
+            "start_date": [">=", frappe.utils.nowdate()],
+            "custom_outlook_event_id": ["is", "set"]
+        },
+        fields=["name"]
+    )
+
+    for meeting in active_meetings:
+        try:
+            # Assuming get_meeting_rsvps is importable here
+            from erpnext_teams_integration.api.meetings import get_meeting_rsvps
+            
+            res = get_meeting_rsvps(meeting.name, "Teams Meeting")
+            
+            if not res or not res.get("success"):
+                continue
+                
+            doc = frappe.get_doc("Teams Meeting", meeting.name)
+            rsvps = res.get("rsvps", {})
+            
+            # Flatten into a quick lookup dict for the child table loop
+            status_map = {}
+            for p in rsvps.get("accepted", []): status_map[p["email"]] = "Yes"
+            for p in rsvps.get("declined", []): status_map[p["email"]] = "No"
+            for p in rsvps.get("tentative", []): status_map[p["email"]] = "Maybe"
+            
+            updated = False
+            for participant in doc.get("meeting_participants"):
+                # If they have an email and they've responded, update the attending column
+                if participant.email and participant.email in status_map:
+                    new_status = status_map[participant.email]
+                    if participant.attending != new_status:
+                        participant.attending = new_status
+                        updated = True
+            
+            if updated:
+                # Bypass standard validations during background cron execution for speed
+                doc.save(ignore_permissions=True)
+                frappe.db.commit()
+
+        except Exception as e:
+            # Using your existing helper to trap errors quietly
+            frappe.log_error(f"Cron RSVP Sync Error for {meeting.name}: {e}", "Teams RSVP Cron")

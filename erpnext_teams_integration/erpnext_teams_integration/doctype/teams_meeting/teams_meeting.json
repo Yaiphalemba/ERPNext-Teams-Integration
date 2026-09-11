@@ -7,14 +7,14 @@
  "engine": "InnoDB",
  "field_order": [
   "meeting_title",
-  "location",
+  "custom_teams_meeting_url",
+  "custom_join_teams_meeting",
   "custom_outlook_event_id",
   "column_break_trft",
   "start_date",
   "start_time",
   "end_time",
-  "custom_teams_meeting_url",
-  "custom_join_teams_meeting",
+  "location",
   "status",
   "section_break_rjte",
   "description",
@@ -64,6 +64,7 @@
    "label": "Participates"
   },
   {
+   "bold": 1,
    "fieldname": "meeting_participants",
    "fieldtype": "Table",
    "label": "Meeting Participants",
@@ -85,6 +86,7 @@
    "options": "\nOpen\nRescheduled\nCompleted\nCancelled"
   },
   {
+   "bold": 1,
    "fieldname": "meeting_recordings_section",
    "fieldtype": "Section Break",
    "label": "Meeting Recordings"
@@ -97,6 +99,7 @@
   {
    "fieldname": "custom_outlook_event_id",
    "fieldtype": "Small Text",
+   "hidden": 1,
    "label": "Outlook Event ID",
    "read_only": 1
   },
@@ -124,7 +127,7 @@
  "index_web_pages_for_search": 1,
  "is_calendar_and_gantt": 1,
  "links": [],
- "modified": "2026-09-10 16:15:56.620553",
+ "modified": "2026-09-11 12:47:07.534032",
  "modified_by": "Administrator",
  "module": "Erpnext Teams Integration",
  "name": "Teams Meeting",

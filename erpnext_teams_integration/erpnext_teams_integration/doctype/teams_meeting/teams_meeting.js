@@ -71,7 +71,6 @@ frappe.ui.form.on("Teams Meeting", {
 
         // 2. Add API action buttons if the document is saved[cite: 2]
         if (!frm.doc.__islocal) {
-            
             // ==========================================
             // 1. CREATE MEETING
             // ==========================================
@@ -137,9 +136,52 @@ frappe.ui.form.on("Teams Meeting", {
                 });
             }, __("Teams"));
 
+            // ==========================================
+            // 3. FETCH MEETING RSVPS
+            // ==========================================
+            frm.add_custom_button(__('Fetch RSVPs'), () => {
+                frappe.call({
+                    method: "erpnext_teams_integration.api.meetings.get_meeting_rsvps", 
+                    args: { docname: frm.doc.name, doctype: frm.doc.doctype },
+                    callback: function(r) {
+                        if(r.message && r.message.success) {
+                            // 1. Map Graph API statuses to Frappe's "Attending" select options
+                            let status_map = {};
+                            r.message.rsvps.accepted.forEach(p => status_map[p.email] = 'Yes');
+                            r.message.rsvps.declined.forEach(p => status_map[p.email] = 'No');
+                            r.message.rsvps.tentative.forEach(p => status_map[p.email] = 'Maybe');
+
+                            // 2. Update the child table safely
+                            frm.reload_doc().then(() => {
+                                let updated = false;
+                                
+                                frm.doc.meeting_participants.forEach(row => {
+                                    if (row.email && status_map[row.email]) {
+                                        if (row.attending !== status_map[row.email]) {
+                                            frappe.model.set_value(row.doctype, row.name, 'attending', status_map[row.email]);
+                                            updated = true;
+                                        }
+                                    }
+                                });
+
+                                if (updated) {
+                                    return frm.save();
+                                }
+                            }).then(() => {
+                                frappe.show_alert({message: "RSVPs fetched and table updated!", indicator: "green"});
+                            }).catch(err => {
+                                console.error("Error saving RSVP status:", err);
+                            });
+
+                        } else {
+                            frappe.msgprint(r.message?.message || "Failed to fetch RSVPs.");
+                        }
+                    }
+                });
+            }, __("Teams"));
 
             // ==========================================
-            // 3. CANCEL MEETING
+            // 4. CANCEL MEETING
             // ==========================================
             frm.add_custom_button(__('Cancel Teams Meeting'), () => {
                 frappe.call({
@@ -171,7 +213,7 @@ frappe.ui.form.on("Teams Meeting", {
             }, __("Teams"));
 
             // ==========================================
-            // 3. GET MEETING RECORDINGS
+            // 5. GET MEETING RECORDINGS
             // ==========================================
             frm.add_custom_button(__('Get Teams Meeting Recording'), () => {
                 frappe.call({

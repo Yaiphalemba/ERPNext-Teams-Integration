@@ -734,3 +734,87 @@ def validate_meeting_time(start_time, end_time, timezone_str="Asia/Kolkata"):
         }
     except Exception as e:
         return {"valid": False, "errors": [f"Invalid date/time format: {e}"]}
+    
+# ---------------------------------------------------------------------------
+# API: RSVP Status
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def get_meeting_rsvps(docname, doctype):
+    try:
+        # Grab the document
+        doc = frappe.get_doc(doctype, docname)
+        
+        # RSVPs are tied to the Calendar event, not the Teams URL!
+        event_id = doc.get("custom_outlook_event_id")
+        if not event_id:
+            return {
+                "success": False, 
+                "message": "No Outlook Event ID found. This meeting might not be on the calendar yet."
+            }
+        
+        token = get_access_token()
+        if not token: 
+            return {"error": "auth_required", "message": "Authentication required to fetch RSVPs."}
+
+        # Ping Microsoft for the attendees list
+        headers = _headers_with_auth(token)
+        # Using $select to only grab what we need (speed optimization!)
+        res = requests.get(
+            f"{GRAPH_API}/me/events/{event_id}?$select=subject,attendees", 
+            headers=headers,
+            timeout=15
+        )
+        
+        check = _check_api_response(res)
+        if check: return check
+
+        if res.status_code == 200:
+            data = res.json()
+            attendees = data.get("attendees", [])
+            
+            # Buckets for our RSVP statuses
+            rsvps = {
+                "accepted": [],
+                "declined": [],
+                "tentative": [],
+                "pending": [] # 'none' or 'notResponded'
+            }
+            
+            for a in attendees:
+                email = a.get("emailAddress", {}).get("address", "")
+                name = a.get("emailAddress", {}).get("name") or email
+                
+                # Graph API response statuses: accepted, declined, tentativelyAccepted, none, notResponded, organizer
+                raw_status = a.get("status", {}).get("response", "none").lower()
+                
+                participant_info = {"name": name, "email": email}
+                
+                if raw_status == "accepted":
+                    rsvps["accepted"].append(participant_info)
+                elif raw_status == "declined":
+                    rsvps["declined"].append(participant_info)
+                elif raw_status == "tentativelyaccepted":
+                    rsvps["tentative"].append(participant_info)
+                elif raw_status == "organizer":
+                    continue # Usually we don't care if the organizer accepted their own meeting
+                else:
+                    rsvps["pending"].append(participant_info)
+                    
+            return {
+                "success": True,
+                "subject": data.get("subject"),
+                "rsvps": rsvps,
+                "summary": {
+                    "accepted": len(rsvps["accepted"]),
+                    "declined": len(rsvps["declined"]),
+                    "tentative": len(rsvps["tentative"]),
+                    "pending": len(rsvps["pending"])
+                }
+            }
+            
+        return {"success": False, "message": f"Failed to fetch RSVPs. MS Graph returned: {res.status_code}"}
+        
+    except Exception as e:
+        safe_log_error(f"RSVP fetch error: {e}", "RSVP Fetch Error")
+        return {"success": False, "message": "An error occurred while fetching RSVPs."}
