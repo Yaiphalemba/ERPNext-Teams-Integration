@@ -102,6 +102,42 @@ frappe.ui.form.on("Interview", {
                     }
                 });
             }, __("Teams"));
+
+            frm.add_custom_button(__('Get Teams Meeting Recording'), () => {
+                frappe.call({
+                    method: "erpnext_teams_integration.api.meetings.fetch_meeting_recording",
+                    args: { docname: frm.doc.name, doctype: frm.doc.doctype },
+                    callback: function(r) {
+                        if (r.message) {
+                            // If it's an object, show the .message field
+                            // let msg = (typeof r.message === "string") ? r.message : r.message.message;
+                            // frappe.msgprint(msg);
+                            console.log(r)
+                            frappe.msgprint("Meeting recording fetched successfully. Please check the 'Meeting Recordings' table for the recording URLs.");
+                        } else if (r.message && r.message.login_url) {
+                            // Redirect to MS login if required
+                            window.location.href = r.message.login_url;
+                        }
+                        frm.reload_doc();
+                    },
+                    error: function(err) {
+                        console.error("Error fetching meeting recording:", err);
+                    }
+                });
+            }, __("Teams"));
         }
     }
 });
+
+frappe.ui.form.on("Meeting Recordings", {
+    playdownload(frm, cdt, cdn) {
+        let row = locals[cdt][cdn];
+        let api_method = "erpnext_teams_integration.api.meetings.stream_meeting_recording";
+        let target_url = row.recording_url;
+        
+        setTimeout(() => {
+            let download_url = `/api/method/${api_method}?docname=${encodeURIComponent(frm.doc.name)}&doctype=${encodeURIComponent(frm.doc.doctype)}&target_url=${encodeURIComponent(target_url.trim())}&index=${row.idx}`;
+            window.open(download_url, '_blank');
+        }, row.idx * 1500); // 1.5 second delay between each file
+    }
+})

@@ -5,6 +5,7 @@ from datetime import datetime, time, timedelta
 import frappe
 import pytz
 import requests
+import urllib.parse
 from frappe.utils import get_datetime, now_datetime
 from .helpers import get_access_token, get_azure_user_id_by_email, get_login_url
 
@@ -36,6 +37,14 @@ SUPPORTED_DOCTYPES = {
         "start_date": "scheduled_on",    
         "start_field": "from_time",     
         "end_field": "to_time",     
+    },
+    "Teams Meeting": {
+        "participants_field": "meeting_participants", 
+        "email_field": "email",
+        "subject_field": "meeting_title", 
+        "start_date": "start_date",
+        "start_field": "start_time",
+        "end_field": "end_time",
     }
 }
 
@@ -356,7 +365,7 @@ def _update_event_attendees(event_id, participant_emails, token):
             })
             
     if len(new_attendees) == len(current_data.get('attendees', [])):
-         return {"success": True, "message": "No new participants to add."}
+        return {"success": True, "message": "No new participants to add."}
 
     patch_res = requests.patch(
         f"{GRAPH_API}/me/events/{event_id}",
@@ -416,8 +425,8 @@ def get_meeting_details(docname, doctype):
 
         meeting_id = _extract_meeting_id_from_join_url(url, token)
         if meeting_id:
-             res = requests.get(f"{GRAPH_API}/me/onlineMeetings/{meeting_id}", headers=_headers_with_auth(token))
-             if res.status_code == 200:
+            res = requests.get(f"{GRAPH_API}/me/onlineMeetings/{meeting_id}", headers=_headers_with_auth(token))
+            if res.status_code == 200:
                 d = res.json()
                 return {
                     "exists": True,
@@ -494,8 +503,8 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
                 end_dt = ensure_datetime_with_time(new_end_time)
         
         if start_dt >= end_dt:
-             end_dt = start_dt + timedelta(hours=1)
-             
+            end_dt = start_dt + timedelta(hours=1)
+
         start_iso = to_utc_isoformat(start_dt)
         end_iso = to_utc_isoformat(end_dt)
 
@@ -529,6 +538,132 @@ def reschedule_meeting(docname, doctype, new_start_time=None, new_end_time=None)
     except Exception as e:
         safe_log_error(f"Reschedule error: {e}", "Reschedule Error")
         frappe.throw("Failed to reschedule.")
+
+# ---------------------------------------------------------------------------
+# API: Recording & Transcript
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def fetch_meeting_recording(docname, doctype):
+    try:
+        token = get_access_token()
+        if not token:
+            return {"error": "auth_required", "login_url": get_login_url(docname)}
+
+        doc = frappe.get_doc(doctype, docname)
+        meeting_url = doc.get("custom_teams_meeting_url")
+
+        if not meeting_url:
+            frappe.throw("No Teams meeting URL found in this document.")
+
+        # 1. Reuse your existing function to get the actual Graph OnlineMeeting ID
+        meeting_id = _extract_meeting_id_from_join_url(meeting_url, token)
+        if not meeting_id:
+            frappe.throw("Could not resolve Teams meeting ID from the stored join URL.")
+
+        # 2. Call the Graph API to get the recordings for this specific meeting
+        headers = _headers_with_auth(token)
+        recordings_res = requests.get(
+            f"{GRAPH_API}/me/onlineMeetings/{meeting_id}/recordings",
+            headers=headers,
+            timeout=30
+        )
+        # return frappe.as_json(recordings_res.json())
+
+        check = _check_api_response(recordings_res)
+        if check: return check
+
+        if recordings_res.status_code != 200:
+            safe_log_error(f"Recording fetch failed {recordings_res.status_code}: {recordings_res.text}", "Teams Recording Error")
+            frappe.throw(f"Teams API error {recordings_res.status_code} while fetching recordings.")
+
+        recordings_data = recordings_res.json().get("value", [])
+        
+        if not recordings_data:
+            return {
+                "success": False, 
+                "message": "No recordings found. The recording may not have been started or is still processing."
+            }
+
+        # 3. Extract the webUrls (SharePoint/OneDrive links to play the video)
+        recording_urls = [rec.get("recordingContentUrl") for rec in recordings_data if rec.get("recordingContentUrl")]
+        
+        doc.set("custom_recording_urls", []) 
+        recording_urls = []
+        
+        for rec in recordings_data:
+            url = rec.get("recordingContentUrl")
+            if not url:
+                continue
+                
+            recording_urls.append(url)
+            
+            # MS returns "2026-09-08T06:44:36.1288882Z"
+            # This splits at the "." to remove microseconds and formats it for ERPNext Datetime fields
+            raw_start = rec.get("createdDateTime", "")
+            if raw_start: raw_start = raw_start.split(".")[0].replace("T", " ")
+            
+            raw_end = rec.get("endDateTime", "")
+            if raw_end: raw_end = raw_end.split(".")[0].replace("T", " ")
+            
+            doc.append("custom_recording_urls", {
+                "recording_url": url,
+                "start_time": raw_start,
+                "end_time": raw_end
+            })
+
+        if not recording_urls:
+            frappe.throw("Recordings exist but no URL was returned by Microsoft.")
+            
+        latest_recording_url = recording_urls[-1]
+
+        # Persist child table changes to the database
+        doc.save(ignore_permissions=True)
+        frappe.db.commit()
+        return {
+            "success": True,
+            "message": "Meeting recording fetched successfully.",
+            "recording_url": latest_recording_url,
+            "all_recordings": recording_urls  # In case there are multiple start/stops during the meeting
+        }
+
+    except frappe.ValidationError:
+        raise
+    except Exception as e:
+        safe_log_error(f"Recording fetch error: {e}", "Meeting Recording Fetch Error")
+        frappe.throw(f"Failed to fetch meeting recording: {str(e)}")
+
+
+@frappe.whitelist(allow_guest=False)
+def stream_meeting_recording(docname, doctype, target_url=None, index=0):
+    index = int(index) # Ensure index is an integer
+    doc = frappe.get_doc(doctype, docname)
+        
+    # urls = urls_string.split(",")
+    # if index >= len(urls):
+    #     frappe.throw(f"Recording part {index + 1} does not exist.")
+        
+    # target_url = urls[index].strip()
+    
+    token = get_access_token()
+    if not token:
+        frappe.throw("Failed to authenticate with Microsoft.")
+        
+    headers = _headers_with_auth(token)
+    res = requests.get(target_url, headers=headers, stream=True)
+    
+    if res.status_code != 200:
+        safe_log_error(f"Failed to fetch part {index}: {res.text}", "Recording Stream Error")
+        frappe.throw(f"Failed to download recording part {index + 1} from Microsoft.")
+        
+    # Stream the file with the part number in the filename
+    # frappe.response.filename = f"{docname}_Recording_Part_{index + 1}.mp4"
+    # frappe.response.filecontent = res.content
+    # frappe.response.type = "download"
+    frappe.response['type'] = 'download'
+    frappe.response['display_content_as'] = 'inline' 
+    frappe.response['filename'] = f"Meeting_Recording_{'Part_'+ str(index) if index > 1 else 'Full'}.mp4"
+    frappe.response['filecontent'] = res.content
 
 # ---------------------------------------------------------------------------
 # API: Attendees
@@ -599,3 +734,87 @@ def validate_meeting_time(start_time, end_time, timezone_str="Asia/Kolkata"):
         }
     except Exception as e:
         return {"valid": False, "errors": [f"Invalid date/time format: {e}"]}
+    
+# ---------------------------------------------------------------------------
+# API: RSVP Status
+# ---------------------------------------------------------------------------
+
+@frappe.whitelist()
+def get_meeting_rsvps(docname, doctype):
+    try:
+        # Grab the document
+        doc = frappe.get_doc(doctype, docname)
+        
+        # RSVPs are tied to the Calendar event, not the Teams URL!
+        event_id = doc.get("custom_outlook_event_id")
+        if not event_id:
+            return {
+                "success": False, 
+                "message": "No Outlook Event ID found. This meeting might not be on the calendar yet."
+            }
+        
+        token = get_access_token()
+        if not token: 
+            return {"error": "auth_required", "message": "Authentication required to fetch RSVPs."}
+
+        # Ping Microsoft for the attendees list
+        headers = _headers_with_auth(token)
+        # Using $select to only grab what we need (speed optimization!)
+        res = requests.get(
+            f"{GRAPH_API}/me/events/{event_id}?$select=subject,attendees", 
+            headers=headers,
+            timeout=15
+        )
+        
+        check = _check_api_response(res)
+        if check: return check
+
+        if res.status_code == 200:
+            data = res.json()
+            attendees = data.get("attendees", [])
+            
+            # Buckets for our RSVP statuses
+            rsvps = {
+                "accepted": [],
+                "declined": [],
+                "tentative": [],
+                "pending": [] # 'none' or 'notResponded'
+            }
+            
+            for a in attendees:
+                email = a.get("emailAddress", {}).get("address", "")
+                name = a.get("emailAddress", {}).get("name") or email
+                
+                # Graph API response statuses: accepted, declined, tentativelyAccepted, none, notResponded, organizer
+                raw_status = a.get("status", {}).get("response", "none").lower()
+                
+                participant_info = {"name": name, "email": email}
+                
+                if raw_status == "accepted":
+                    rsvps["accepted"].append(participant_info)
+                elif raw_status == "declined":
+                    rsvps["declined"].append(participant_info)
+                elif raw_status == "tentativelyaccepted":
+                    rsvps["tentative"].append(participant_info)
+                elif raw_status == "organizer":
+                    continue # Usually we don't care if the organizer accepted their own meeting
+                else:
+                    rsvps["pending"].append(participant_info)
+                    
+            return {
+                "success": True,
+                "subject": data.get("subject"),
+                "rsvps": rsvps,
+                "summary": {
+                    "accepted": len(rsvps["accepted"]),
+                    "declined": len(rsvps["declined"]),
+                    "tentative": len(rsvps["tentative"]),
+                    "pending": len(rsvps["pending"])
+                }
+            }
+            
+        return {"success": False, "message": f"Failed to fetch RSVPs. MS Graph returned: {res.status_code}"}
+        
+    except Exception as e:
+        safe_log_error(f"RSVP fetch error: {e}", "RSVP Fetch Error")
+        return {"success": False, "message": "An error occurred while fetching RSVPs."}

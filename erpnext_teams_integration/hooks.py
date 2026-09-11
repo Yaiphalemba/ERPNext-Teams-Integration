@@ -175,10 +175,11 @@ after_install = "erpnext_teams_integration.install.after_install"
 # }
 
 scheduler_events = {
-       "hourly": [
-           "erpnext_teams_integration.api.chat.sync_all_conversations"
-       ],
-       "daily": [
+        "hourly": [
+            "erpnext_teams_integration.api.chat.sync_all_conversations",
+            "erpnext_teams_integration.erpnext_teams_integration.doctype.teams_meeting.teams_meeting.sync_all_teams_rsvps"
+        ],
+        "daily": [
             "erpnext_teams_integration.api.auth.renew_graph_subscriptions"
     ]
 }
